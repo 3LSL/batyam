@@ -621,6 +621,17 @@ const generateDashArray = (len, oValueS, oValueE) => {
   return dashArray;
 };
 
+/**
+ * @param {*} elem
+ * @param {*} edge
+ * @param {*} clusterDb
+ * @param {*} diagramType
+ * @param {*} startNode
+ * @param {*} endNode
+ * @param {*} diagramId
+ * @param {boolean} [skipIntersect]
+ * @param {string} [layoutAlgorithm] - The layout that placed the edge; defaults to the configured one.
+ */
 export const insertEdge = function (
   elem,
   edge,

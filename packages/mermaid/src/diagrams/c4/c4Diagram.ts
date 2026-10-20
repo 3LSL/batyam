@@ -11,8 +11,7 @@ export const diagram: DiagramDefinition = {
   db,
   renderer,
   styles,
-  init: ({ c4, wrap }: MermaidConfig) => {
-    renderer.setConf(c4);
+  init: ({ wrap }: MermaidConfig) => {
     db.setWrap(wrap);
   },
 };

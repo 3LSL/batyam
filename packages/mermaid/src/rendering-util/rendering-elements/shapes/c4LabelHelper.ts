@@ -18,11 +18,15 @@ const MIN_WRAP_WIDTH = 32;
  * structure and return contract. The wrap width is a soft limit - an
  * unbreakable word may exceed it, and the calling shape self-sizes from the
  * returned bounds.
+ *
+ * Sections are centred on each other unless `align` says otherwise; a C4 boundary title, for
+ * one, lines its sections up on their left edges.
  */
 export const c4LabelHelper = async <T extends SVGGraphicsElement>(
   parent: D3Selection<T>,
   node: Node,
-  classes?: string
+  classes?: string,
+  { align = 'center' }: { align?: 'start' | 'center' | 'end' } = {}
 ) => {
   const config = getConfig();
 
@@ -46,10 +50,10 @@ export const c4LabelHelper = async <T extends SVGGraphicsElement>(
   const wrapWidth = node.width
     ? Math.max(node.width - 2 * (node.padding ?? 0), MIN_WRAP_WIDTH)
     : (getConfig().flowchart?.wrappingWidth ?? 200);
-  // `c4.wrap` (schema default true) is this diagram's own auto-wrap flag, and is what
-  // the legacy renderer gated on. The root-level `wrap` has no schema default, so
-  // reading it here left every C4 label unwrapped.
-  const shouldWrap = config.c4?.wrap ?? true;
+  // `c4.wrap` (schema default true) is this diagram's own auto-wrap flag. The root-level
+  // `wrap` has no schema default, so only an explicit `wrap: false` turns wrapping off;
+  // treating its absence as false left every C4 label unwrapped.
+  const shouldWrap = (config.c4?.wrap ?? true) && config.wrap !== false;
   const width = shouldWrap ? wrapWidth : Number.POSITIVE_INFINITY;
 
   const rendered = await Promise.all(
@@ -68,8 +72,10 @@ export const c4LabelHelper = async <T extends SVGGraphicsElement>(
         },
         config
       );
-      // Center each wrapped line within the section; the outer tspan elements sit at x=0.
-      select(textEl).selectAll('tspan.text-outer-tspan').attr('text-anchor', 'middle');
+      // Align each wrapped line within the section; the outer tspan elements sit at x=0.
+      select(textEl)
+        .selectAll('tspan.text-outer-tspan')
+        .attr('text-anchor', align === 'center' ? 'middle' : align);
       // Without markdown every word is "normal"; drop the presentation attributes so
       // font weight and style from CSS (section classes, per-element config) inherit.
       select(textEl)
@@ -83,7 +89,13 @@ export const c4LabelHelper = async <T extends SVGGraphicsElement>(
   const totalWidth = Math.max(...rendered.map(({ box }) => box.width), 0);
   let y = 0;
   for (const { el, box } of rendered) {
-    el.attr('transform', `translate(${totalWidth / 2 - box.x - box.width / 2}, ${y - box.y})`);
+    const x =
+      align === 'start'
+        ? -box.x
+        : align === 'end'
+          ? totalWidth - box.x - box.width
+          : totalWidth / 2 - box.x - box.width / 2;
+    el.attr('transform', `translate(${x}, ${y - box.y})`);
     y += box.height + SECTION_GAP;
   }
   const totalHeight = rendered.length > 0 ? y - SECTION_GAP : 0;

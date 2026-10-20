@@ -1,0 +1,24 @@
+---
+description: >-
+  Elements and boundaries without relationships inside a nested boundary, set
+  out in the rows UpdateLayoutConfig asks for: three elements in the first
+  row, then one boundary per row, each row lined up at the start.
+---
+C4Context
+title Rows inside a boundary
+Person(customer, "Customer")
+Enterprise_Boundary(bank, "Bank") {
+  System(banking, "Internet Banking")
+  System_Ext(mail, "E-mail System")
+  SystemDb(archive, "Archive")
+  System_Boundary(core, "Core Banking") {
+    System(ledger, "Ledger")
+    System(payments, "Payments")
+  }
+  System_Boundary(risk, "Risk") {
+    System(fraud, "Fraud Detection")
+  }
+}
+Rel(customer, banking, "Uses")
+Rel(banking, mail, "Sends e-mails with")
+UpdateLayoutConfig($c4ShapeInRow="3", $c4BoundaryInRow="1")

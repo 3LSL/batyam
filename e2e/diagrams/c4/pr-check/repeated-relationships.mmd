@@ -1,0 +1,14 @@
+---
+description: >-
+  C4Dynamic diagram in which the API reaches the database twice: both numbered
+  relationships are drawn, on separate lines, and neither replaces the other.
+---
+C4Dynamic
+title Repeated interactions
+Container(spa, "Single-Page App", "JavaScript")
+Container(api, "API Application", "Java")
+ContainerDb(db, "Database", "Relational Database Schema")
+Rel(spa, api, "Submits credentials to", "JSON/HTTPS")
+Rel(api, db, "Selects user record from", "JDBC")
+Rel(api, db, "Writes login audit to", "JDBC")
+Rel(api, spa, "Returns session token to", "JSON/HTTPS")

@@ -1,0 +1,42 @@
+---
+description: >-
+  A busy component diagram drawn with the spacing options turned down: elements,
+  layers, parallel lines and boundary contents closer together, and relationship
+  labels wrapped at 120px. Every label, arrowhead and boundary title stays clear
+  of the elements and lines around it.
+config:
+  c4:
+    c4ShapeSpacing: 10
+    c4LayerSpacing: 16
+    c4RelSpacing: 6
+    c4RelShapeSpacing: 14
+    c4RelLabelWrapWidth: 120
+    c4BoundaryPadding: 8
+    c4BoundaryTitleGap: 8
+---
+C4Component
+title Compact spacing
+Person(customer, "Customer")
+Container_Boundary(api, "API Application") {
+  Component(router, "Router", "Express", "Routes each request to its controller")
+  Component(auth, "Auth Middleware", "Express")
+  Component(orders, "Orders Controller", "Express")
+  Component(payments, "Payments Controller", "Express")
+  Container_Boundary(domain, "Domain") {
+    Component(orderModel, "Order Model", "TypeScript")
+    Component(paymentModel, "Payment Model", "TypeScript")
+  }
+}
+ContainerDb(db, "Database", "PostgreSQL")
+System_Ext(provider, "Payment Provider")
+Rel(customer, router, "Places orders and pays for them", "HTTPS")
+Rel(router, auth, "Checks the session of every request")
+Rel(router, orders, "Forwards order requests")
+Rel(router, payments, "Forwards payment requests")
+Rel(orders, orderModel, "Validates and stores orders")
+Rel(payments, paymentModel, "Records payment attempts")
+Rel(payments, orderModel, "Marks orders as paid")
+Rel(orderModel, db, "Reads and writes orders", "SQL")
+Rel(paymentModel, db, "Reads and writes payments", "SQL")
+Rel(payments, provider, "Charges the customer", "HTTPS")
+Rel(auth, db, "Reads sessions", "SQL")
