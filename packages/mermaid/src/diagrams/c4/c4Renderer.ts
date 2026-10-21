@@ -112,19 +112,22 @@ export const boundaryTypeLabel = (boundary: C4Boundary): string | undefined => {
   return `[${kinds[type] ?? type}]`;
 };
 
-/** Whether the C4 layout should use dagre rather than ELK. */
-const useDagre = (): boolean =>
-  !injected.includeLargeFeatures || getUserDefinedConfig().layout === 'dagre';
-
-const loadElk = async (): Promise<ElkApi> => {
-  // elkjs is CommonJS: depending on the bundler the constructor is the module's default export
-  // or the default export of that.
-  const elkModule = (await import('elkjs/lib/elk.bundled.js')) as unknown as {
-    default: (new () => ElkApi) | { default: new () => ElkApi };
-  };
-  const ELK = 'default' in elkModule.default ? elkModule.default.default : elkModule.default;
-  return new ELK();
-};
+/**
+ * Loads ELK. elkjs is ~1.6 MB, so the tiny build leaves it out, as it does for the other ELK
+ * layouts, and lays C4 diagrams out with dagre. The ternary on the build constant is what lets
+ * the bundler drop the import: a check at run time would keep it.
+ */
+const loadElk = injected.includeLargeFeatures
+  ? async (): Promise<ElkApi> => {
+      // elkjs is CommonJS: depending on the bundler the constructor is the module's default
+      // export or the default export of that.
+      const elkModule = (await import('elkjs/lib/elk.bundled.js')) as unknown as {
+        default: (new () => ElkApi) | { default: new () => ElkApi };
+      };
+      const ELK = 'default' in elkModule.default ? elkModule.default.default : elkModule.default;
+      return new ELK();
+    }
+  : undefined;
 
 /**
  * Draws a C4 diagram: the elements, boundary titles and relationship labels are drawn and
@@ -134,7 +137,7 @@ const loadElk = async (): Promise<ElkApi> => {
 export const draw = async function (_text: string, id: string, _version: string, diag: Diagram) {
   const config = getConfig();
   const c4Config = config.c4 ?? {};
-  const dagre = useDagre();
+  const dagre = !loadElk || getUserDefinedConfig().layout === 'dagre';
   const spacing = resolveC4Spacing(c4Config, { dagre });
   const db = diag.db as C4DB;
   const svg = getDiagramElement(id, config.securityLevel) as SVG;
@@ -255,16 +258,17 @@ export const draw = async function (_text: string, id: string, _version: string,
     grid: { elementsPerRow: db.getC4ShapeInRow(), boundariesPerRow: db.getC4BoundaryInRow() },
     spacing,
   };
-  const layout: C4LayoutResult = dagre
-    ? layoutWithDagre(layoutInput)
-    : await layoutWithElk(layoutInput, await loadElk()).catch((error: unknown) => {
-        // A diagram drawn with the simpler layout beats no diagram at all.
-        log.warn('C4: ELK layout failed, falling back to dagre', error);
-        return layoutWithDagre({
-          ...layoutInput,
-          spacing: resolveC4Spacing(c4Config, { dagre: true }),
+  const layout: C4LayoutResult =
+    dagre || !loadElk
+      ? layoutWithDagre(layoutInput)
+      : await layoutWithElk(layoutInput, await loadElk()).catch((error: unknown) => {
+          // A diagram drawn with the simpler layout beats no diagram at all.
+          log.warn('C4: ELK layout failed, falling back to dagre', error);
+          return layoutWithDagre({
+            ...layoutInput,
+            spacing: resolveC4Spacing(c4Config, { dagre: true }),
+          });
         });
-      });
 
   // --- Clean-up ---------------------------------------------------------------------------------
   const refineElements = new Map<string, RefineElement>();
