@@ -36,9 +36,9 @@ System(SystemAA, "Internet Banking System")
       link: undefined,
       tags: undefined,
       parentBoundary: 'global',
+      // A plain Boundary has no type unless the diagram gives it one.
       type: {
-        // TODO: Why is this `system` instead of `boundary`?
-        text: 'system',
+        text: '',
       },
       wrap: false,
     });

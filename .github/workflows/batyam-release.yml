@@ -1,0 +1,92 @@
+# Packs packages/mermaid as @3lsl/batyam and attaches the tarball to a GitHub release, for each
+# pushed tag batyam-v<mermaid version>-batyam.<n>, for example batyam-v12.2.0-batyam.1.
+# See RELEASING.md.
+# cspell:ignore batyam mktemp
+name: Batyam release
+
+on:
+  push:
+    tags:
+      - 'batyam-v*'
+
+permissions:
+  contents: write # to create the release
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1d0ff469b7ec7b3cb9d8673fde0c81c44821de2a # v4.2.0
+        with:
+          cache: pnpm
+          node-version-file: '.node-version'
+
+      - name: Install Packages
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Pack
+        working-directory: packages/mermaid
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          VERSION="${TAG#batyam-v}"
+          MERMAID_VERSION="$(node -p "require('./package.json').version")"
+          N="${VERSION#"$MERMAID_VERSION"-batyam.}"
+          if [[ "$VERSION" != "$MERMAID_VERSION-batyam.$N" || ! "$N" =~ ^(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::Tag $TAG should be batyam-v$MERMAID_VERSION-batyam.<n>"
+            exit 1
+          fi
+          # The package is called mermaid in the source; only this tarball is renamed.
+          npm pkg set name=@3lsl/batyam version="$VERSION"
+          TARBALL="$PWD/3lsl-batyam-$VERSION.tgz"
+          # pnpm, unlike npm, replaces workspace: specifiers with the versions they stand for.
+          pnpm pack --out "$TARBALL"
+          {
+            echo "VERSION=$VERSION"
+            echo "MERMAID_VERSION=$MERMAID_VERSION"
+            echo "TARBALL=$TARBALL"
+          } >> "$GITHUB_ENV"
+
+      - name: Check tarball
+        run: |
+          DIR="$(mktemp -d)"
+          tar -xzf "$TARBALL" -C "$DIR"
+          MANIFEST="$DIR/package/package.json"
+          FAILED=0
+          if grep -n 'workspace:' "$MANIFEST"; then
+            echo "::error::package.json still has workspace: specifiers"
+            FAILED=1
+          fi
+          for FILE in dist/mermaid.core.mjs dist/mermaid.d.ts dist/mermaid.esm.min.mjs; do
+            if [ ! -f "$DIR/package/$FILE" ]; then
+              echo "::error::$FILE is missing from the tarball"
+              FAILED=1
+            fi
+          done
+          PACKAGE="$(node -p 'const p = require(process.argv[1]); `${p.name}@${p.version}`' "$MANIFEST")"
+          if [ "$PACKAGE" != "@3lsl/batyam@$VERSION" ]; then
+            echo "::error::The tarball holds $PACKAGE, not @3lsl/batyam@$VERSION"
+            FAILED=1
+          fi
+          exit "$FAILED"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/download/$TAG/$(basename "$TARBALL")"
+          NOTES="$(printf 'Mermaid %s with the Batyam changes, built from %s.\n\nTo use it, add to package.json:\n\n```json\n"@3lsl/batyam": "%s"\n```\n' \
+            "$MERMAID_VERSION" "$GITHUB_SHA" "$URL")"
+          gh release create "$TAG" "$TARBALL" --verify-tag --title "Batyam $VERSION" --notes "$NOTES"

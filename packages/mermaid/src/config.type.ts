@@ -1742,13 +1742,68 @@ export interface C4DiagramConfig extends BaseDiagramConfig {
    */
   diagramMarginY?: number;
   /**
-   * Margin between shapes
+   * Gap between elements, both within a layer of the layout and between
+   * layers, unless `c4ShapeSpacing` or `c4LayerSpacing` sets it.
+   *
    */
   c4ShapeMargin?: number;
   /**
-   * Padding between shapes
+   * Space between an element's border and its text.
    */
   c4ShapePadding?: number;
+  /**
+   * Gap between neighbouring elements in the same layer of the layout: side
+   * by side when the relationships flow down or up, one above the other
+   * when they flow left or right. Defaults to `c4ShapeMargin`. Values
+   * below 10 are raised to 10, or below 24 to 24 when the diagram is laid
+   * out with dagre.
+   *
+   */
+  c4ShapeSpacing?: number;
+  /**
+   * Gap between consecutive layers of the layout, along the flow of the
+   * relationships. The lines and labels of the relationships between two
+   * layers can widen it. Defaults to `c4ShapeMargin`. Values below 12 are
+   * raised to 12, or below 24 to 24 when the diagram is laid out with
+   * dagre.
+   *
+   */
+  c4LayerSpacing?: number;
+  /**
+   * Gap between relationship lines that run side by side. Values below 6
+   * are raised to 6.
+   *
+   */
+  c4RelSpacing?: number;
+  /**
+   * Gap between relationship lines and the elements they pass, and the
+   * length of the last straight stretch of a line into an element. Values
+   * below 12 are raised to 12.
+   *
+   */
+  c4RelShapeSpacing?: number;
+  /**
+   * Width at which relationship labels wrap. Narrower labels make the
+   * drawing narrower when the relationships flow down or up, and shorter
+   * when they flow left or right, but taller labels make up some of the
+   * difference. Values below 80 are raised to 80.
+   *
+   */
+  c4RelLabelWrapWidth?: number;
+  /**
+   * Space between a boundary's border and its contents. Values below 8 are
+   * raised to 8. A boundary with a relationship to something inside it
+   * keeps at least 20, the room the relationship is drawn in.
+   *
+   */
+  c4BoundaryPadding?: number;
+  /**
+   * Space between a boundary's title and its contents. Values below 8 are
+   * raised to 8. A boundary with a relationship to something inside it
+   * keeps at least 14.
+   *
+   */
+  c4BoundaryTitleGap?: number;
   /**
    * Width of person boxes
    */

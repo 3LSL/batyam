@@ -1,0 +1,20 @@
+---
+description: >-
+  C4Container laid out left to right by the direction statement: the customer
+  on the left and the containers flowing to the right, each relationship drawn
+  with horizontal and vertical lines and its label clear of the elements.
+---
+C4Container
+title Left to right
+direction LR
+Person(customer, "Customer", "A customer of the bank")
+Container_Boundary(bank, "Internet Banking") {
+  Container(spa, "Single-Page App", "JavaScript", "Banking in the browser")
+  Container(api, "API Application", "Java", "Banking over JSON/HTTPS")
+  ContainerDb(db, "Database", "SQL", "Accounts and access logs")
+}
+System_Ext(mail, "E-mail System", "Microsoft Exchange")
+Rel(customer, spa, "Uses", "HTTPS")
+Rel(spa, api, "Calls", "JSON/HTTPS")
+Rel(api, db, "Reads from and writes to", "JDBC")
+Rel(api, mail, "Sends e-mails using", "SMTP")

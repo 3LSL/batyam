@@ -78,14 +78,10 @@
 
 %%
 
-.*direction\s+TB[^\n]*                    return 'direction_tb';
-.*direction\s+BT[^\n]*                    return 'direction_bt';
-.*direction\s+RL[^\n]*                    return 'direction_rl';
-.*direction\s+LR[^\n]*                    return 'direction_lr';
+"direction"\s+("TB"|"TD"|"BT"|"RL"|"LR")\b   { yytext = yytext.replace(/^direction\s+/, ''); return 'DIRECTION'; }
 
-
-"title"\s[^#\n;]+                         return 'title';
-"accDescription"\s[^#\n;]+                return 'accDescription';
+"title"\s[^\n\r]+                          return 'title';
+"accDescription"\s[^\n\r]+                 return 'accDescription';
 accTitle\s*":"\s*                         { this.begin("acc_title");return 'acc_title'; }
 <acc_title>(?!\n|;|#)*[^\n]*              { this.popState(); return "acc_title_value"; }
 accDescr\s*":"\s*                         { this.begin("acc_descr");return 'acc_descr'; }
@@ -197,59 +193,54 @@ accDescr\s*"{"\s*                         { this.begin("acc_descr_multiline");}
 
 start
     : mermaidDoc
-    | direction
-    ;
-
-direction
-    : direction_tb
-    { yy.setDirection('TB');}
-    | direction_bt
-    { yy.setDirection('BT');}
-    | direction_rl
-    { yy.setDirection('RL');}
-    | direction_lr
-    { yy.setDirection('LR');}
     ;
 
 mermaidDoc
     : graphConfig
     ;
 
-
 graphConfig
-    : C4_CONTEXT NEWLINE statements EOF {yy.setC4Type($1)}
-    | C4_CONTAINER NEWLINE statements EOF {yy.setC4Type($1)}
-    | C4_COMPONENT NEWLINE statements EOF {yy.setC4Type($1)}
-    | C4_DYNAMIC NEWLINE statements EOF {yy.setC4Type($1)}
-    | C4_DEPLOYMENT NEWLINE statements EOF {yy.setC4Type($1)}
+    : c4Type EOF
+    | c4Type NEWLINE EOF
+    | c4Type NEWLINE statements EOF
+    ;
+
+c4Type
+    : C4_CONTEXT {yy.setC4Type($1)}
+    | C4_CONTAINER {yy.setC4Type($1)}
+    | C4_COMPONENT {yy.setC4Type($1)}
+    | C4_DYNAMIC {yy.setC4Type($1)}
+    | C4_DEPLOYMENT {yy.setC4Type($1)}
     ;
 
 statements
-    : otherStatements
-    | diagramStatements
-    | otherStatements diagramStatements
+    : statement
+    | statement NEWLINE
+    | statement NEWLINE statements
     ;
 
-otherStatements
+statement
     : otherStatement
-    | otherStatement NEWLINE
-    | otherStatement NEWLINE otherStatements
+    | diagramStatement
     ;
 
 otherStatement
-    : title {yy.setTitle($1.substring(6));$$=$1.substring(6);}
-    | accDescription {yy.setAccDescription($1.substring(15));$$=$1.substring(15);}
-    | acc_title acc_title_value  { $$=$2.trim();yy.setTitle($$); }
+    : title {$$=$1.substring(6).trim();yy.setTitle($$);}
+    | accDescription {$$=$1.substring(15).trim();yy.setAccDescription($$);}
+    | acc_title acc_title_value  { $$=$2.trim();yy.setAccTitle($$); }
     | acc_descr acc_descr_value  { $$=$2.trim();yy.setAccDescription($$); }
     | acc_descr_multiline_value  { $$=$1.trim();yy.setAccDescription($$); }
+    | DIRECTION { yy.setDirection($1); }
     ;
 
 boundaryStatement
-    : boundaryStartStatement diagramStatements boundaryStopStatement
+    : boundaryStartStatement statements boundaryStopStatement
+    | boundaryStartStatement boundaryStopStatement
     ;
 
 boundaryStartStatement
-    : boundaryStart LBRACE NEWLINE
+    : boundaryStart LBRACE
+    | boundaryStart LBRACE NEWLINE
     | boundaryStart NEWLINE LBRACE
     | boundaryStart NEWLINE LBRACE NEWLINE
     ;
@@ -266,12 +257,6 @@ boundaryStart
 
 boundaryStopStatement
     : RBRACE { yy.popBoundaryParseStack() }
-    ;
-
-diagramStatements
-    : diagramStatement
-    | diagramStatement NEWLINE
-    | diagramStatement NEWLINE statements
     ;
 
 diagramStatement

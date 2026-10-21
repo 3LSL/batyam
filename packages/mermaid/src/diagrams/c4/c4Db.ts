@@ -72,6 +72,17 @@ let wrapEnabled: boolean | undefined = false;
 let c4ShapeInRow = 4;
 let c4BoundaryInRow = 2;
 let c4Type: string | undefined;
+let direction: C4DiagramDirection = 'TB';
+/** Every element and boundary alias, in the order the diagram declares them. */
+let declarationOrder: string[] = [];
+
+export type C4DiagramDirection = 'TB' | 'BT' | 'LR' | 'RL';
+
+const recordDeclaration = (alias: string) => {
+  if (!declarationOrder.includes(alias)) {
+    declarationOrder.push(alias);
+  }
+};
 
 export const getC4Type = function () {
   return c4Type;
@@ -108,13 +119,10 @@ export const addRel = function (
     return;
   }
 
-  let rel = {} as C4Rel;
-  const old = rels.find((rel) => rel.from === from && rel.to === to);
-  if (old) {
-    rel = old;
-  } else {
-    rels.push(rel);
-  }
+  // Every statement is its own relationship: a dynamic diagram in particular repeats a pair for
+  // each interaction between them (#7183).
+  const rel = {} as C4Rel;
+  rels.push(rel);
 
   rel.type = type;
   rel.from = from;
@@ -170,6 +178,7 @@ export const addPersonOrSystem = function (
     personOrSystem.alias = alias;
     c4ShapeArray.push(personOrSystem);
   }
+  recordDeclaration(alias);
 
   // Don't allow null labels, either
   if (label === undefined || label === null) {
@@ -219,6 +228,7 @@ export const addContainer = function (
     container.alias = alias;
     c4ShapeArray.push(container);
   }
+  recordDeclaration(alias);
 
   // Don't allow null labels, either
   if (label === undefined || label === null) {
@@ -279,6 +289,7 @@ export const addComponent = function (
     component.alias = alias;
     c4ShapeArray.push(component);
   }
+  recordDeclaration(alias);
 
   // Don't allow null labels, either
   if (label === undefined || label === null) {
@@ -338,6 +349,7 @@ export const addPersonOrSystemBoundary = function (
     boundary.alias = alias;
     boundaries.push(boundary);
   }
+  recordDeclaration(alias);
 
   // Don't allow null labels, either
   if (label === undefined || label === null) {
@@ -347,7 +359,9 @@ export const addPersonOrSystemBoundary = function (
   }
 
   if (type === undefined || type === null) {
-    boundary.type = { text: 'system' };
+    // A plain `Boundary` without a type has none; `System_Boundary` and
+    // `Enterprise_Boundary` always arrive with theirs.
+    boundary.type = { text: '' };
   } else {
     if (typeof type === 'object') {
       const [key, value] = Object.entries(type)[0];
@@ -389,6 +403,7 @@ export const addContainerBoundary = function (
     boundary.alias = alias;
     boundaries.push(boundary);
   }
+  recordDeclaration(alias);
 
   // Don't allow null labels, either
   if (label === undefined || label === null) {
@@ -443,6 +458,7 @@ export const addDeploymentNode = function (
     boundary.alias = alias;
     boundaries.push(boundary);
   }
+  recordDeclaration(alias);
 
   // Don't allow null labels, either
   if (label === undefined || label === null) {
@@ -452,7 +468,8 @@ export const addDeploymentNode = function (
   }
 
   if (type === undefined || type === null) {
-    boundary.type = { text: 'node' };
+    // A deployment node without a type shows none.
+    boundary.type = { text: '' };
   } else {
     if (typeof type === 'object') {
       const [key, value] = Object.entries(type)[0];
@@ -490,6 +507,29 @@ export const popBoundaryParseStack = function () {
   boundaryParseStack.push(parentBoundaryParse);
 };
 
+/**
+ * Stores one style attribute. It may arrive in its own positional slot, or as a named
+ * `$key="value"` override in any slot; either way its name decides how it is stored: the
+ * label offsets as numbers, the text fields as `{ text }`, everything else as given.
+ */
+const assignStyle = (
+  target: C4Shape | C4Boundary | C4Rel,
+  slot: string,
+  value: ParserAttribute | null | undefined
+) => {
+  if (value === undefined || value === null) {
+    return;
+  }
+  const [key, raw] = typeof value === 'object' ? Object.entries(value)[0] : [slot, value];
+  if (key === 'offsetX' || key === 'offsetY') {
+    target[key] = parseInt(raw);
+  } else if (TEXT_FIELDS.has(key)) {
+    target[key] = { text: raw };
+  } else {
+    target[key] = raw;
+  }
+};
+
 //elementName, ?bgColor, ?fontColor, ?borderColor, ?shadowing, ?shape, ?sprite, ?techn, ?legendText, ?legendSprite
 export const updateElStyle = function (
   typeC4Shape: string,
@@ -504,88 +544,25 @@ export const updateElStyle = function (
   legendText?: ParserAttribute | null,
   legendSprite?: ParserAttribute | null
 ) {
-  let old: C4Shape | C4Boundary | undefined = c4ShapeArray.find(
-    (element) => element.alias === elementName
-  );
+  const old: C4Shape | C4Boundary | undefined =
+    c4ShapeArray.find((element) => element.alias === elementName) ??
+    boundaries.find((element) => element.alias === elementName);
   if (old === undefined) {
-    old = boundaries.find((element) => element.alias === elementName);
-    if (old === undefined) {
-      return;
-    }
+    return;
   }
-  if (bgColor !== undefined && bgColor !== null) {
-    if (typeof bgColor === 'object') {
-      const [key, value] = Object.entries(bgColor)[0];
-      old[key] = value;
-    } else {
-      old.bgColor = bgColor;
-    }
-  }
-  if (fontColor !== undefined && fontColor !== null) {
-    if (typeof fontColor === 'object') {
-      const [key, value] = Object.entries(fontColor)[0];
-      old[key] = value;
-    } else {
-      old.fontColor = fontColor;
-    }
-  }
-  if (borderColor !== undefined && borderColor !== null) {
-    if (typeof borderColor === 'object') {
-      const [key, value] = Object.entries(borderColor)[0];
-      old[key] = value;
-    } else {
-      old.borderColor = borderColor;
-    }
-  }
-  if (shadowing !== undefined && shadowing !== null) {
-    if (typeof shadowing === 'object') {
-      const [key, value] = Object.entries(shadowing)[0];
-      old[key] = value;
-    } else {
-      old.shadowing = shadowing;
-    }
-  }
-  if (shape !== undefined && shape !== null) {
-    if (typeof shape === 'object') {
-      const [key, value] = Object.entries(shape)[0];
-      old[key] = value;
-    } else {
-      old.shape = shape;
-    }
-  }
-  if (sprite !== undefined && sprite !== null) {
-    if (typeof sprite === 'object') {
-      const [key, value] = Object.entries(sprite)[0];
-      old[key] = value;
-    } else {
-      old.sprite = sprite;
-    }
-  }
-  if (techn !== undefined && techn !== null) {
-    if (typeof techn === 'object') {
-      const [key, value] = Object.entries(techn)[0];
-      old[key] = value;
-    } else {
-      // The parser hands over a plain string here, even though `techn` is a
-      // `{ text: string }` object everywhere else.
-      old.techn = techn as unknown as C4Shape['techn'];
-    }
-  }
-  if (legendText !== undefined && legendText !== null) {
-    if (typeof legendText === 'object') {
-      const [key, value] = Object.entries(legendText)[0];
-      old[key] = value;
-    } else {
-      old.legendText = legendText;
-    }
-  }
-  if (legendSprite !== undefined && legendSprite !== null) {
-    if (typeof legendSprite === 'object') {
-      const [key, value] = Object.entries(legendSprite)[0];
-      old[key] = value;
-    } else {
-      old.legendSprite = legendSprite;
-    }
+  const slots: [string, ParserAttribute | null | undefined][] = [
+    ['bgColor', bgColor],
+    ['fontColor', fontColor],
+    ['borderColor', borderColor],
+    ['shadowing', shadowing],
+    ['shape', shape],
+    ['sprite', sprite],
+    ['techn', techn],
+    ['legendText', legendText],
+    ['legendSprite', legendSprite],
+  ];
+  for (const [slot, value] of slots) {
+    assignStyle(old, slot, value);
   }
 };
 
@@ -599,40 +576,16 @@ export const updateRelStyle = function (
   offsetX?: ParserAttribute | null,
   offsetY?: ParserAttribute | null
 ) {
-  const old = rels.find((rel) => rel.from === from && rel.to === to);
-  if (old === undefined) {
-    return;
-  }
-  if (textColor !== undefined && textColor !== null) {
-    if (typeof textColor === 'object') {
-      const [key, value] = Object.entries(textColor)[0];
-      old[key] = value;
-    } else {
-      old.textColor = textColor;
-    }
-  }
-  if (lineColor !== undefined && lineColor !== null) {
-    if (typeof lineColor === 'object') {
-      const [key, value] = Object.entries(lineColor)[0];
-      old[key] = value;
-    } else {
-      old.lineColor = lineColor;
-    }
-  }
-  if (offsetX !== undefined && offsetX !== null) {
-    if (typeof offsetX === 'object') {
-      const [key, value] = Object.entries(offsetX)[0];
-      old[key] = parseInt(value);
-    } else {
-      old.offsetX = parseInt(offsetX);
-    }
-  }
-  if (offsetY !== undefined && offsetY !== null) {
-    if (typeof offsetY === 'object') {
-      const [key, value] = Object.entries(offsetY)[0];
-      old[key] = parseInt(value);
-    } else {
-      old.offsetY = parseInt(offsetY);
+  // A pair can be related more than once; the statement names the pair, so it styles them all.
+  for (const old of rels.filter((rel) => rel.from === from && rel.to === to)) {
+    const slots: [string, ParserAttribute | null | undefined][] = [
+      ['textColor', textColor],
+      ['lineColor', lineColor],
+      ['offsetX', offsetX],
+      ['offsetY', offsetY],
+    ];
+    for (const [slot, value] of slots) {
+      assignStyle(old, slot, value);
     }
   }
 };
@@ -731,6 +684,24 @@ export const autoWrap = function () {
   return wrapEnabled;
 };
 
+export const setDirection = function (dir: string) {
+  const normalized = dir.trim().toUpperCase();
+  if (normalized === 'TB' || normalized === 'BT' || normalized === 'LR' || normalized === 'RL') {
+    direction = normalized;
+  } else if (normalized === 'TD') {
+    direction = 'TB';
+  }
+};
+
+export const getDirection = function (): C4DiagramDirection {
+  return direction;
+};
+
+/** Every element and boundary alias, in declaration order. */
+export const getDeclarationOrder = function (): readonly string[] {
+  return declarationOrder;
+};
+
 export const clear = function () {
   c4ShapeArray = [];
   boundaries = [createGlobalBoundary()];
@@ -744,6 +715,8 @@ export const clear = function () {
   wrapEnabled = false;
   c4ShapeInRow = 4;
   c4BoundaryInRow = 2;
+  direction = 'TB';
+  declarationOrder = [];
 };
 
 export const LINETYPE = {
@@ -825,5 +798,7 @@ export default {
   PLACEMENT,
   setTitle,
   setC4Type,
-  // apply,
+  setDirection,
+  getDirection,
+  getDeclarationOrder,
 };

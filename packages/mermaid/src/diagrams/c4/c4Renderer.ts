@@ -1,663 +1,624 @@
-import svgDraw from './svgDraw.js';
-import { log } from '../../logger.js';
-// @ts-ignore: JISON doesn't support types
-import { parser } from './parser/c4Diagram.jison';
-import common from '../common/common.js';
-import c4Db from './c4Db.js';
-import { getConfig } from '../../diagram-api/diagramAPI.js';
-import { getRequiredConfig } from '../../diagram-api/requiredConfig.js';
-import assignWithDepth from '../../assignWithDepth.js';
-import { wrapLabel, calculateTextWidth, calculateTextHeight } from '../../utils.js';
-import { getDiagramRoot } from '../../utils/diagramRoot.js';
-import { configureSvgSize } from '../../setupGraphViewbox.js';
 import type { Diagram } from '../../Diagram.js';
-import type { C4DiagramConfig } from '../../config.type.js';
-import type { SVG } from '../../diagram-api/types.js';
-import type { TextDimensionConfig } from '../../types.js';
+import { getConfig, getUserDefinedConfig } from '../../config.js';
+import type { MermaidConfig } from '../../config.type.js';
+import type { SVG, SVGGroup } from '../../diagram-api/types.js';
+import { log } from '../../logger.js';
+import { getDiagramElement } from '../../rendering-util/insertElementsForSize.js';
+import { clear as clearEdges, insertEdge } from '../../rendering-util/rendering-elements/edges.js';
+import insertMarkers from '../../rendering-util/rendering-elements/markers.js';
+import {
+  clear as clearNodes,
+  insertNode,
+  positionNode,
+} from '../../rendering-util/rendering-elements/nodes.js';
+import { c4LabelHelper } from '../../rendering-util/rendering-elements/shapes/c4LabelHelper.js';
+import type { NonClusterNode } from '../../rendering-util/types.js';
+import { configureSvgSize } from '../../setupGraphViewbox.js';
+import type { D3Selection } from '../../types.js';
+import { formatUrl } from '../../utils.js';
+import type c4Db from './c4Db.js';
+import type { C4OutlineKind } from './c4Geometry.js';
 import type {
-  C4Boundary,
-  C4DrawConfig,
-  C4Element,
-  C4Font,
+  C4Direction,
+  C4LayoutEdge,
+  C4LayoutInput,
+  C4LayoutResult,
   C4Point,
-  C4Rel,
-  C4Shape,
-  C4Text,
-} from './c4Types.js';
-import { shapes } from '../../rendering-util/rendering-elements/shapes.js';
-import { buildC4Node } from './c4ShapeAdapter.js';
-import intersect from '../../rendering-util/rendering-elements/intersect/index.js';
+  C4Rect,
+  ElkApi,
+} from './c4Layout.js';
+import { layoutWithDagre, layoutWithElk } from './c4Layout.js';
+import type { C4RelPlan } from './c4Orientation.js';
+import { planRelationships } from './c4Orientation.js';
+import type { RefineBoundary, RefineElement, RefineRel } from './c4Refine.js';
+import { refineLayout } from './c4Refine.js';
+import { asColor, buildC4Node, resolveNodeShape } from './c4ShapeAdapter.js';
+import { resolveC4Spacing } from './c4Spacing.js';
+import type { C4Boundary, C4Rel, C4Shape } from './c4Types.js';
 
 type C4DB = typeof c4Db;
+type Group = D3Selection<SVGGElement>;
 
-/** The config passed to {@link setConf} may carry the global font settings. */
-type C4SetConfigParam = C4DiagramConfig & {
-  fontFamily?: string;
-  fontSize?: string | number;
-  fontWeight?: string | number;
+/** Corner radius of a boundary. */
+const BOUNDARY_RADIUS = 6;
+/** Breathing room around a relationship label, inside its background. */
+const LABEL_PADDING = 3;
+/** Width at which a boundary title wraps. */
+const TITLE_WRAP_WIDTH = 360;
+/** Corner radius of the rounded C4 boxes, as set inline by `buildC4Node`. */
+const ELEMENT_RADIUS = 12;
+/** Gap between the diagram title and the diagram. */
+const TITLE_GAP = 24;
+
+interface ElementView {
+  shape: C4Shape;
+  node: NonClusterNode;
+  outline: C4OutlineKind;
+}
+
+interface BoundaryView {
+  boundary: C4Boundary;
+  group: Group;
+  title?: { group: Group; box: DOMRect };
+}
+
+interface RelView {
+  rel: C4Rel;
+  id: string;
+  /** How the layout treats it; see `c4Orientation.ts`. */
+  plan: C4RelPlan;
+  label?: { group: Group; box: DOMRect };
+}
+
+/** The end the layout places first, and the other. */
+const layoutEnds = ({ rel, plan }: RelView): [string, string] => {
+  if (plan.sideBySide) {
+    return [plan.sideBySide.before, plan.sideBySide.after];
+  }
+  return plan.reversed ? [rel.to, rel.from] : [rel.from, rel.to];
 };
 
-interface BoundsData {
-  startx?: number;
-  stopx?: number;
-  starty?: number;
-  stopy?: number;
-  widthLimit?: number;
-}
-
-interface NextBoundsData {
-  startx?: number;
-  stopx?: number;
-  starty?: number;
-  stopy?: number;
-  cnt: number;
-}
-
-/** A {@link C4Text} after measurement: the layout fields are populated. */
-type MeasuredC4Text = C4Text & { width: number; height: number; textLines: number };
-
-let globalBoundaryMaxX = 0,
-  globalBoundaryMaxY = 0;
-
-let c4ShapeInRow = 4;
-let c4BoundaryInRow = 2;
-
-parser.yy = c4Db;
-
-let conf = {} as C4DrawConfig;
-
-class Bounds {
-  name: string;
-  data: BoundsData;
-  nextData: NextBoundsData;
-
-  constructor(diagObj: Diagram) {
-    this.name = '';
-    this.data = {};
-    this.data.startx = undefined;
-    this.data.stopx = undefined;
-    this.data.starty = undefined;
-    this.data.stopy = undefined;
-    this.data.widthLimit = undefined;
-
-    this.nextData = {} as NextBoundsData;
-    this.nextData.startx = undefined;
-    this.nextData.stopx = undefined;
-    this.nextData.starty = undefined;
-    this.nextData.stopy = undefined;
-    this.nextData.cnt = 0;
-
-    setConf((diagObj.db as C4DB).getConfig());
-  }
-
-  setData(startx: number, stopx: number, starty: number, stopy: number) {
-    this.nextData.startx = this.data.startx = startx;
-    this.nextData.stopx = this.data.stopx = stopx;
-    this.nextData.starty = this.data.starty = starty;
-    this.nextData.stopy = this.data.stopy = stopy;
-  }
-
-  updateVal(
-    obj: BoundsData | NextBoundsData,
-    key: 'startx' | 'stopx' | 'starty' | 'stopy',
-    val: number,
-    fun: (a: number, b: number) => number
-  ) {
-    if (obj[key] === undefined) {
-      obj[key] = val;
-    } else {
-      obj[key] = fun(val, obj[key]);
-    }
-  }
-
-  insert(c4Shape: C4Shape) {
-    this.nextData.cnt = this.nextData.cnt + 1;
-    // `setData()` seeds the bounds before any `insert()` call.
-    const nextStopx = this.nextData.stopx!;
-    const widthLimit = this.data.widthLimit!;
-    let _startx =
-      this.nextData.startx === this.nextData.stopx
-        ? nextStopx + c4Shape.margin
-        : nextStopx + c4Shape.margin * 2;
-    let _stopx = _startx + c4Shape.width;
-    let _starty = this.nextData.starty! + c4Shape.margin * 2;
-    let _stopy = _starty + c4Shape.height;
-    if (_startx >= widthLimit || _stopx >= widthLimit || this.nextData.cnt > c4ShapeInRow) {
-      _startx = this.nextData.startx! + c4Shape.margin + conf.nextLinePaddingX;
-      _starty = this.nextData.stopy! + c4Shape.margin * 2;
-
-      this.nextData.stopx = _stopx = _startx + c4Shape.width;
-      this.nextData.starty = this.nextData.stopy;
-      this.nextData.stopy = _stopy = _starty + c4Shape.height;
-      this.nextData.cnt = 1;
-    }
-
-    c4Shape.x = _startx;
-    c4Shape.y = _starty;
-
-    this.updateVal(this.data, 'startx', _startx, Math.min);
-    this.updateVal(this.data, 'starty', _starty, Math.min);
-    this.updateVal(this.data, 'stopx', _stopx, Math.max);
-    this.updateVal(this.data, 'stopy', _stopy, Math.max);
-
-    this.updateVal(this.nextData, 'startx', _startx, Math.min);
-    this.updateVal(this.nextData, 'starty', _starty, Math.min);
-    this.updateVal(this.nextData, 'stopx', _stopx, Math.max);
-    this.updateVal(this.nextData, 'stopy', _stopy, Math.max);
-  }
-
-  init(diagObj: Diagram) {
-    this.name = '';
-    this.data = {
-      startx: undefined,
-      stopx: undefined,
-      starty: undefined,
-      stopy: undefined,
-      widthLimit: undefined,
-    };
-    this.nextData = {
-      startx: undefined,
-      stopx: undefined,
-      starty: undefined,
-      stopy: undefined,
-      cnt: 0,
-    };
-    setConf((diagObj.db as C4DB).getConfig());
-  }
-
-  bumpLastMargin(margin: number) {
-    this.data.stopx! += margin;
-    this.data.stopy! += margin;
-  }
-}
-
-export const setConf = function (cnf?: C4SetConfigParam) {
-  assignWithDepth(conf, cnf);
-
-  if (cnf?.fontFamily) {
-    conf.personFontFamily = conf.systemFontFamily = conf.messageFontFamily = cnf.fontFamily;
-  }
-  if (cnf?.fontSize) {
-    conf.personFontSize = conf.systemFontSize = conf.messageFontSize = cnf.fontSize;
-  }
-  if (cnf?.fontWeight) {
-    conf.personFontWeight = conf.systemFontWeight = conf.messageFontWeight = cnf.fontWeight;
+const outlineKind = (shape: C4Shape): C4OutlineKind => {
+  switch (resolveNodeShape(shape)) {
+    case 'person':
+      return 'person';
+    case 'cylinder':
+      return 'cylinder';
+    case 'h-cyl':
+      return 'queue';
+    case 'rounded':
+    case 'fr-rect':
+      return 'rounded';
+    default:
+      return 'rect';
   }
 };
 
-const boundaryFont = (cnf: C4DrawConfig): C4Font => {
-  return {
-    fontFamily: cnf.boundaryFontFamily,
-    fontSize: cnf.boundaryFontSize as number,
-    fontWeight: cnf.boundaryFontWeight,
+const isPersonType = (shape: C4Shape | undefined) =>
+  shape?.typeC4Shape.text === 'person' || shape?.typeC4Shape.text === 'external_person';
+
+/** The boundary type shown in brackets under a boundary's name, if any. */
+export const boundaryTypeLabel = (boundary: C4Boundary): string | undefined => {
+  const type = boundary.type?.text?.trim();
+  if (!type) {
+    return undefined;
+  }
+  // The grammar injects the boundary kind in capitals; a type written in the diagram is kept.
+  const kinds: Record<string, string> = {
+    ENTERPRISE: 'Enterprise',
+    SYSTEM: 'Software System',
+    CONTAINER: 'Container',
   };
+  return `[${kinds[type] ?? type}]`;
 };
-
-const messageFont = (cnf: C4DrawConfig): C4Font => {
-  return {
-    fontFamily: cnf.messageFontFamily,
-    fontSize: cnf.messageFontSize as number,
-    fontWeight: cnf.messageFontWeight,
-  };
-};
-
-function calcC4ShapeTextWH(
-  textType: 'label' | 'type' | 'techn' | 'descr',
-  c4Shape: C4Shape | C4Boundary | C4Rel,
-  c4ShapeTextWrap: boolean | undefined,
-  textConf: C4Font,
-  textLimitWidth: number
-): MeasuredC4Text {
-  // `textType` is always one of the `C4Text` valued fields of `c4Shape`, and
-  // the layout fields are populated below (or by an earlier measurement).
-  const textElement = c4Shape[textType] as MeasuredC4Text;
-  if (!textElement.width) {
-    if (c4ShapeTextWrap) {
-      textElement.text = wrapLabel(
-        textElement.text,
-        textLimitWidth,
-        textConf as Parameters<typeof wrapLabel>[2]
-      );
-      textElement.textLines = textElement.text.split(common.lineBreakRegex).length;
-      // textElement.width = calculateTextWidth(textElement.text, textConf);
-      textElement.width = textLimitWidth;
-      // textElement.height = textElement.textLines * textConf.fontSize;
-      textElement.height = calculateTextHeight(textElement.text, textConf as TextDimensionConfig);
-    } else {
-      const lines = textElement.text.split(common.lineBreakRegex);
-      textElement.textLines = lines.length;
-      let lineHeight = 0;
-      textElement.height = 0;
-      textElement.width = 0;
-      for (const line of lines) {
-        textElement.width = Math.max(
-          calculateTextWidth(line, textConf as TextDimensionConfig),
-          textElement.width
-        );
-        lineHeight = calculateTextHeight(line, textConf as TextDimensionConfig);
-        textElement.height = textElement.height + lineHeight;
-      }
-      // c4Shapes[textType].height = c4Shapes[textType].textLines * textConf.fontSize;
-    }
-  }
-  return textElement;
-}
-
-export const drawBoundary = function (diagram: SVG, boundary: C4Boundary, bounds: Bounds) {
-  // The bounds are seeded via `setData()` before a boundary is drawn.
-  const startx = bounds.data.startx!;
-  const starty = bounds.data.starty!;
-  boundary.x = startx;
-  boundary.y = starty;
-  boundary.width = bounds.data.stopx! - startx;
-  boundary.height = bounds.data.stopy! - starty;
-  // A boundary can be a relationship endpoint, and its box is a plain rectangle.
-  // intersect.rect measures from the centre, while the C4 grid stores the top-left corner.
-  boundary.intersect = (point: C4Point) =>
-    intersect.rect(
-      {
-        x: boundary.x + boundary.width / 2,
-        y: boundary.y + boundary.height / 2,
-        width: boundary.width,
-        height: boundary.height,
-      },
-      point
-    );
-
-  boundary.label.y = conf.c4ShapeMargin - 35;
-
-  const boundaryTextWrap = boundary.wrap && conf.wrap;
-  const boundaryLabelConf = boundaryFont(conf);
-  boundaryLabelConf.fontSize = boundaryLabelConf.fontSize + 2;
-  boundaryLabelConf.fontWeight = 'bold';
-  const textLimitWidth = calculateTextWidth(
-    boundary.label.text,
-    boundaryLabelConf as TextDimensionConfig
-  );
-  calcC4ShapeTextWH('label', boundary, boundaryTextWrap, boundaryLabelConf, textLimitWidth);
-
-  svgDraw.drawBoundary(diagram, boundary, conf);
-};
-
-export const drawC4ShapeArray = async function (
-  currentBounds: Bounds,
-  diagram: SVG,
-  c4ShapeArray: C4Shape[],
-  c4ShapeKeys: string[]
-) {
-  const mermaidConfig = getConfig();
-  const look = mermaidConfig.look ?? 'classic';
-  const renderOptions = { config: mermaidConfig };
-  // Namespace the shape DOM ids with the diagram id so two diagrams on one page don't
-  // collide (the unified shapes use node.domId for the element id).
-  const diagramId = diagram.attr('id') ?? '';
-
-  // `c4ShapeKeys` are the (numeric string) indices of `c4ShapeArray`.
-  const c4Shapes = c4ShapeKeys.map((key) => c4ShapeArray[Number(key)]);
-
-  const shapeHandlerFor = (node: ReturnType<typeof buildC4Node>) => {
-    const handler = node.shape ? shapes[node.shape] : undefined;
-    if (!handler) {
-      throw new Error(`C4: no shape handler for "${node.shape}"`);
-    }
-    return handler;
-  };
-
-  // Pass 1 (measure): render each shape, read its self-sized dimensions onto the legacy
-  // c4Shape, then discard the rendering. The shape is drawn again in pass 2 directly at its
-  // final position, so its label (and any composited sub-element) lays out under the final
-  // transform - drawing at the origin and translating afterwards leaves composited layers
-  // (e.g. anything with opacity) painting at the stale origin.
-  await Promise.all(
-    c4Shapes.map(async (c4Shape) => {
-      const node = buildC4Node(c4Shape, conf, conf.c4ShapePadding, look, conf.width);
-      node.domId = `${diagramId}-${node.id}`;
-      const measured = await shapeHandlerFor(node)(diagram, node, renderOptions);
-      c4Shape.width = node.width ?? conf.width;
-      c4Shape.height = node.height ?? conf.height;
-      c4Shape.margin = conf.c4ShapeMargin;
-      measured.remove();
-    })
-  );
-
-  // Position with the legacy grid.
-  for (const c4Shape of c4Shapes) {
-    currentBounds.insert(c4Shape);
-  }
-
-  // Pass 2 (draw): render each shape into a group already translated to its grid position
-  // (unified shapes are centred at the origin; legacy x/y is the top-left corner).
-  await Promise.all(
-    c4Shapes.map(async (c4Shape) => {
-      const node = buildC4Node(c4Shape, conf, conf.c4ShapePadding, look, conf.width);
-      node.domId = `${diagramId}-${node.id}`;
-      // Needed to properly calculate the intersection points.
-      node.x = c4Shape.x + c4Shape.width / 2;
-      node.y = c4Shape.y + c4Shape.height / 2;
-      // Appending before the await keeps the shapes' stacking order deterministic.
-      const positioned = diagram
-        .append('g')
-        .attr(
-          'transform',
-          `translate(${c4Shape.x + c4Shape.width / 2}, ${c4Shape.y + c4Shape.height / 2})`
-        );
-      await shapeHandlerFor(node)(positioned, node, renderOptions);
-      c4Shape.intersect = node.intersect;
-    })
-  );
-
-  currentBounds.bumpLastMargin(conf.c4ShapeMargin);
-};
-
-class Point {
-  x: number;
-  y: number;
-
-  constructor(x: number, y: number) {
-    this.x = x;
-    this.y = y;
-  }
-}
-
-/*
- * Get the intersection of the line between the center point of a rectangle and a point outside the rectangle.
- */
-const getIntersectPoint = function (fromNode: C4Element, endPoint: Point): Point | null {
-  if (!fromNode.intersect) {
-    throw new Error(
-      `C4 element "${fromNode.alias}" has no intersect function. Please report this to https://github.com/mermaid-js/mermaid/issues`
-    );
-  }
-  const { x, y } = fromNode.intersect(endPoint);
-  return new Point(x, y);
-};
-
-const getIntersectPoints = function (fromNode: C4Element, endNode: C4Element) {
-  const endIntersectPoint = { x: 0, y: 0 };
-  endIntersectPoint.x = endNode.x + endNode.width / 2;
-  endIntersectPoint.y = endNode.y + endNode.height / 2;
-  const startPoint = getIntersectPoint(fromNode, endIntersectPoint);
-
-  endIntersectPoint.x = fromNode.x + fromNode.width / 2;
-  endIntersectPoint.y = fromNode.y + fromNode.height / 2;
-  const endPoint = getIntersectPoint(endNode, endIntersectPoint);
-  return { startPoint: startPoint, endPoint: endPoint };
-};
-
-export const drawRels = function (
-  diagram: SVG,
-  rels: C4Rel[],
-  getC4ShapeObj: (alias: string) => C4Element | undefined,
-  diagObj: Diagram,
-  diagramId: string
-) {
-  const diagramType = (diagObj.db as C4DB).getC4Type();
-  let i = 0;
-  for (const rel of rels) {
-    i = i + 1;
-    const relTextWrap = rel.wrap && conf.wrap;
-    const relConf = messageFont(conf);
-    if (diagramType === 'C4Dynamic') {
-      rel.label.text = i + ': ' + rel.label.text;
-    }
-    let textLimitWidth = calculateTextWidth(rel.label.text, relConf as TextDimensionConfig);
-    calcC4ShapeTextWH('label', rel, relTextWrap, relConf, textLimitWidth);
-
-    if (rel.techn && rel.techn.text !== '') {
-      textLimitWidth = calculateTextWidth(rel.techn.text, relConf as TextDimensionConfig);
-      calcC4ShapeTextWH('techn', rel, relTextWrap, relConf, textLimitWidth);
-    }
-
-    if (rel.descr && rel.descr.text !== '') {
-      textLimitWidth = calculateTextWidth(rel.descr.text, relConf as TextDimensionConfig);
-      calcC4ShapeTextWH('descr', rel, relTextWrap, relConf, textLimitWidth);
-    }
-
-    const fromNode = getC4ShapeObj(rel.from);
-    const endNode = getC4ShapeObj(rel.to);
-    if (!fromNode || !endNode) {
-      throw new Error(
-        `C4 rel "${rel.from}" -> "${rel.to}" references an unknown shape or boundary`
-      );
-    }
-    const points = getIntersectPoints(fromNode, endNode);
-    if (!points.startPoint || !points.endPoint) {
-      throw new Error(
-        `Could not calculate intersection points for rel "${rel.from}" -> "${rel.to}"`
-      );
-    }
-    rel.startPoint = points.startPoint;
-    rel.endPoint = points.endPoint;
-  }
-  svgDraw.drawRels(diagram, rels, conf, diagramId);
-};
-
-async function drawInsideBoundary(
-  diagram: SVG,
-  parentBoundaryAlias: string,
-  parentBounds: Bounds,
-  currentBoundaries: C4Boundary[],
-  diagObj: Diagram
-) {
-  const db = diagObj.db as C4DB;
-  const currentBounds = new Bounds(diagObj);
-  // Calculate the width limit of the boundary.  label/type 的长度，
-  currentBounds.data.widthLimit =
-    parentBounds.data.widthLimit! / Math.min(c4BoundaryInRow, currentBoundaries.length);
-  // Math.min(
-  //   conf.width * conf.c4ShapeInRow + conf.c4ShapeMargin * conf.c4ShapeInRow * 2,
-  //   parentBounds.data.widthLimit / Math.min(conf.c4BoundaryInRow, currentBoundaries.length)
-  // );
-  for (const [i, currentBoundary] of currentBoundaries.entries()) {
-    let Y = 0;
-    currentBoundary.image = { width: 0, height: 0, Y: 0 };
-    if (currentBoundary.sprite) {
-      currentBoundary.image.width = 48;
-      currentBoundary.image.height = 48;
-      currentBoundary.image.Y = Y;
-      Y = currentBoundary.image.Y + currentBoundary.image.height;
-    }
-
-    const currentBoundaryTextWrap = currentBoundary.wrap && conf.wrap;
-
-    const currentBoundaryLabelConf = boundaryFont(conf);
-    currentBoundaryLabelConf.fontSize = currentBoundaryLabelConf.fontSize + 2;
-    currentBoundaryLabelConf.fontWeight = 'bold';
-    const label = calcC4ShapeTextWH(
-      'label',
-      currentBoundary,
-      currentBoundaryTextWrap,
-      currentBoundaryLabelConf,
-      currentBounds.data.widthLimit
-    );
-    label.Y = Y + 8;
-    Y = label.Y + label.height;
-
-    if (currentBoundary.type && currentBoundary.type.text !== '') {
-      currentBoundary.type.text = '[' + currentBoundary.type.text + ']';
-      const currentBoundaryTypeConf = boundaryFont(conf);
-      const type = calcC4ShapeTextWH(
-        'type',
-        currentBoundary,
-        currentBoundaryTextWrap,
-        currentBoundaryTypeConf,
-        currentBounds.data.widthLimit
-      );
-      type.Y = Y + 5;
-      Y = type.Y + type.height;
-    }
-
-    if (currentBoundary.descr && currentBoundary.descr.text !== '') {
-      const currentBoundaryDescrConf = boundaryFont(conf);
-      currentBoundaryDescrConf.fontSize = currentBoundaryDescrConf.fontSize - 2;
-      const descr = calcC4ShapeTextWH(
-        'descr',
-        currentBoundary,
-        currentBoundaryTextWrap,
-        currentBoundaryDescrConf,
-        currentBounds.data.widthLimit
-      );
-      descr.Y = Y + 20;
-      Y = descr.Y + descr.height;
-    }
-
-    if (i == 0 || i % c4BoundaryInRow === 0) {
-      // Calculate the drawing start point of the currentBoundaries.
-      const _x = parentBounds.data.startx! + conf.diagramMarginX;
-      const _y = parentBounds.data.stopy! + conf.diagramMarginY + Y;
-
-      currentBounds.setData(_x, _x, _y, _y);
-    } else {
-      // Calculate the drawing start point of the currentBoundaries.
-      const _x =
-        currentBounds.data.stopx !== currentBounds.data.startx
-          ? currentBounds.data.stopx! + conf.diagramMarginX
-          : currentBounds.data.startx!;
-      const _y = currentBounds.data.starty!;
-
-      currentBounds.setData(_x, _x, _y, _y);
-    }
-    currentBounds.name = currentBoundary.alias;
-    const currentPersonOrSystemArray = db.getC4ShapeArray(currentBoundary.alias);
-    const currentPersonOrSystemKeys = db.getC4ShapeKeys(currentBoundary.alias);
-
-    if (currentPersonOrSystemKeys.length > 0) {
-      await drawC4ShapeArray(
-        currentBounds,
-        diagram,
-        currentPersonOrSystemArray,
-        currentPersonOrSystemKeys
-      );
-    }
-    parentBoundaryAlias = currentBoundary.alias;
-    const nextCurrentBoundaries = db.getBoundaries(parentBoundaryAlias);
-
-    if (nextCurrentBoundaries.length > 0) {
-      // draw boundary inside currentBoundary
-      await drawInsideBoundary(
-        diagram,
-        parentBoundaryAlias,
-        currentBounds,
-        nextCurrentBoundaries,
-        diagObj
-      );
-    }
-    // draw boundary
-    if (currentBoundary.alias !== 'global') {
-      drawBoundary(diagram, currentBoundary, currentBounds);
-    }
-    parentBounds.data.stopy = Math.max(
-      currentBounds.data.stopy! + conf.c4ShapeMargin,
-      parentBounds.data.stopy!
-    );
-    parentBounds.data.stopx = Math.max(
-      currentBounds.data.stopx! + conf.c4ShapeMargin,
-      parentBounds.data.stopx!
-    );
-    globalBoundaryMaxX = Math.max(globalBoundaryMaxX, parentBounds.data.stopx);
-    globalBoundaryMaxY = Math.max(globalBoundaryMaxY, parentBounds.data.stopy);
-  }
-}
 
 /**
- * Draws a sequenceDiagram in the tag with id: id based on the graph definition in text.
+ * Loads ELK. elkjs is ~1.6 MB, so the tiny build leaves it out, as it does for the other ELK
+ * layouts, and lays C4 diagrams out with dagre. The ternary on the build constant is what lets
+ * the bundler drop the import: a check at run time would keep it.
  */
-export const draw = async function (_text: string, id: string, _version: string, diagObj: Diagram) {
-  conf = getRequiredConfig('c4') as C4DrawConfig;
-  const securityLevel = getConfig().securityLevel;
-  // Handle root and Document for when rendering in sandbox mode
-  const { root } = getDiagramRoot(id, securityLevel);
+const loadElk = injected.includeLargeFeatures
+  ? async (): Promise<ElkApi> => {
+      // elkjs is CommonJS: depending on the bundler the constructor is the module's default
+      // export or the default export of that.
+      const elkModule = (await import('elkjs/lib/elk.bundled.js')) as unknown as {
+        default: (new () => ElkApi) | { default: new () => ElkApi };
+      };
+      const ELK = 'default' in elkModule.default ? elkModule.default.default : elkModule.default;
+      return new ELK();
+    }
+  : undefined;
 
-  const db = diagObj.db as C4DB;
+/**
+ * Draws a C4 diagram: the elements, boundary titles and relationship labels are drawn and
+ * measured, the layout positions them and routes the relationships, the result is cleaned up
+ * (see `c4Refine.ts`), and everything is then moved into place.
+ */
+export const draw = async function (_text: string, id: string, _version: string, diag: Diagram) {
+  const config = getConfig();
+  const c4Config = config.c4 ?? {};
+  const dagre = !loadElk || getUserDefinedConfig().layout === 'dagre';
+  const spacing = resolveC4Spacing(c4Config, { dagre });
+  const db = diag.db as C4DB;
+  const svg = getDiagramElement(id, config.securityLevel) as SVG;
+  const root = svg.select<SVGGElement>('g');
+  const look = config.look ?? 'classic';
 
-  db.setWrap(conf.wrap);
+  clearNodes();
+  clearEdges();
+  insertMarkers(root, ['point'], 'c4', id);
 
-  c4ShapeInRow = db.getC4ShapeInRow();
-  c4BoundaryInRow = db.getC4BoundaryInRow();
+  const container = root.append('g').attr('class', 'c4-diagram');
+  const boundaryLayer = container.append('g').attr('class', 'c4-boundaries');
+  const edgeLayer = container.append('g').attr('class', 'c4-relationships edgePaths');
+  const elementLayer = container.append('g').attr('class', 'c4-elements nodes');
+  const labelLayer = container.append('g').attr('class', 'c4-relationship-labels');
+  // Titles no line could be moved off are lifted above the lines.
+  const titleOverlay = container.append('g').attr('class', 'c4-boundary-titles-overlay');
 
-  log.debug(`C:${JSON.stringify(conf, null, 2)}`);
+  // --- Elements ---------------------------------------------------------------------------------
+  const boundaryList = db.getBoundaries().filter((boundary) => boundary.alias !== 'global');
+  const boundaryAliases = new Set(boundaryList.map((boundary) => boundary.alias));
+  const parentOf = (alias: string | undefined) =>
+    alias && boundaryAliases.has(alias) ? alias : undefined;
 
-  const diagram: SVG = root.select<SVGSVGElement>(`[id="${id}"]`);
-
-  svgDraw.insertComputerIcon(diagram, id);
-  svgDraw.insertDatabaseIcon(diagram, id);
-  svgDraw.insertClockIcon(diagram, id);
-
-  const screenBounds = new Bounds(diagObj);
-
-  screenBounds.setData(
-    conf.diagramMarginX,
-    conf.diagramMarginX,
-    conf.diagramMarginY,
-    conf.diagramMarginY
-  );
-
-  screenBounds.data.widthLimit = screen.availWidth;
-  globalBoundaryMaxX = conf.diagramMarginX;
-  globalBoundaryMaxY = conf.diagramMarginY;
-
-  const title = db.getTitle();
-  const currentBoundaries = db.getBoundaries('');
-  // switch (c4type) {
-  //   case 'C4Context':
-  await drawInsideBoundary(diagram, '', screenBounds, currentBoundaries, diagObj);
-  //     break;
-  // }
-
-  // The arrow head definition is attached to the svg once
-  svgDraw.insertArrowHead(diagram, id);
-  svgDraw.insertArrowEnd(diagram, id);
-  svgDraw.insertArrowCrossHead(diagram, id);
-  svgDraw.insertArrowFilledHead(diagram, id);
-
-  drawRels(diagram, db.getRels(), db.getC4Shape, diagObj, id);
-
-  screenBounds.data.stopx = globalBoundaryMaxX;
-  screenBounds.data.stopy = globalBoundaryMaxY;
-
-  const box = screenBounds.data;
-  // `setData()` above seeded the start coordinates.
-  const boxStartx = box.startx!;
-  const boxStarty = box.starty!;
-
-  // Make sure the height of the diagram supports long menus.
-  const boxHeight = globalBoundaryMaxY - boxStarty;
-
-  const height = boxHeight + 2 * conf.diagramMarginY;
-
-  // Make sure the width of the diagram supports wide menus.
-  const boxWidth = globalBoundaryMaxX - boxStartx;
-  const width = boxWidth + 2 * conf.diagramMarginX;
-
-  if (title) {
-    diagram
-      .append('text')
-      .text(title)
-      .attr('x', boxWidth / 2 - 4 * conf.diagramMarginX)
-      .attr('y', boxStarty + conf.diagramMarginY);
+  const elements = new Map<string, ElementView>();
+  for (const shape of db.getC4ShapeArray()) {
+    const node = buildC4Node(
+      shape,
+      c4Config,
+      c4Config.c4ShapePadding ?? 20,
+      look,
+      c4Config.width ?? 216
+    );
+    node.domId = `${id}-${shape.alias}`;
+    const link = shape.link ? formatUrl(shape.link, config) : undefined;
+    if (link) {
+      node.link = link;
+    }
+    const element = await insertNode(elementLayer as unknown as SVGGroup, node, { config });
+    element.attr('data-c4-alias', shape.alias);
+    const parent = parentOf(shape.parentBoundary);
+    if (parent) {
+      element.attr('data-c4-boundary', parent);
+    }
+    elements.set(shape.alias, { shape, node, outline: outlineKind(shape) });
   }
 
-  configureSvgSize(diagram, height, width, conf.useMaxWidth);
+  // --- Boundaries -------------------------------------------------------------------------------
+  const boundaries = new Map<string, BoundaryView>();
+  for (const boundary of sortOuterFirst(boundaryList, parentOf)) {
+    boundaries.set(
+      boundary.alias,
+      await drawBoundaryTitle(
+        boundaryLayer,
+        boundary,
+        parentOf(boundary.parentBoundary),
+        id,
+        config
+      )
+    );
+  }
 
-  const extraVertForTitle = title ? 60 : 0;
-  diagram.attr(
-    'viewBox',
-    boxStartx -
-      conf.diagramMarginX +
-      ' -' +
-      (conf.diagramMarginY + extraVertForTitle) +
-      ' ' +
-      width +
-      ' ' +
-      (height + extraVertForTitle)
+  // --- Relationships ----------------------------------------------------------------------------
+  const isDynamic = db.getC4Type() === 'C4Dynamic';
+  const knownAlias = (alias: string) => elements.has(alias) || boundaries.has(alias);
+  const rels = db.getRels().filter((rel) => {
+    if (knownAlias(rel.from) && knownAlias(rel.to)) {
+      return true;
+    }
+    log.warn(`C4: relationship "${rel.from}" -> "${rel.to}" names an undefined element; skipped`);
+    return false;
+  });
+  const direction = db.getDirection() as C4Direction;
+  const plans = planRelationships(rels, direction, db.getDeclarationOrder(), (alias) =>
+    isPersonType(elements.get(alias)?.shape)
   );
+  const relViews: RelView[] = [];
+  for (const [index, rel] of rels.entries()) {
+    const relId = `c4-rel-${index}`;
+    const label = await drawRelationshipLabel(
+      labelLayer,
+      rel,
+      isDynamic ? `${index + 1}: ` : '',
+      `${id}-${relId}-label`,
+      spacing.labelWrapWidth
+    );
+    label?.group.attr('data-c4-rel', relId);
+    relViews.push({ rel, id: relId, plan: plans[index], label });
+  }
 
-  log.debug(`models:`, box);
+  // --- Layout -----------------------------------------------------------------------------------
+  const layoutInput: C4LayoutInput = {
+    nodes: [...elements.values()].map(({ shape, node }) => ({
+      id: shape.alias,
+      width: node.width ?? 0,
+      height: node.height ?? 0,
+      parent: parentOf(shape.parentBoundary),
+    })),
+    boundaries: [...boundaries.values()].map(({ boundary, title }) => ({
+      id: boundary.alias,
+      parent: parentOf(boundary.parentBoundary),
+      titleWidth: title?.box.width ?? 0,
+      titleHeight: title?.box.height ?? 0,
+    })),
+    edges: relViews.map((view): C4LayoutEdge => {
+      const [source, target] = layoutEnds(view);
+      return {
+        id: view.id,
+        source,
+        target,
+        labelWidth: view.label ? view.label.box.width + 2 * LABEL_PADDING : 0,
+        labelHeight: view.label ? view.label.box.height + 2 * LABEL_PADDING : 0,
+        sideBySide: view.plan.sideBySide !== undefined,
+      };
+    }),
+    order: [...db.getDeclarationOrder()],
+    direction,
+    grid: { elementsPerRow: db.getC4ShapeInRow(), boundariesPerRow: db.getC4BoundaryInRow() },
+    spacing,
+  };
+  const layout: C4LayoutResult =
+    dagre || !loadElk
+      ? layoutWithDagre(layoutInput)
+      : await layoutWithElk(layoutInput, await loadElk()).catch((error: unknown) => {
+          // A diagram drawn with the simpler layout beats no diagram at all.
+          log.warn('C4: ELK layout failed, falling back to dagre', error);
+          return layoutWithDagre({
+            ...layoutInput,
+            spacing: resolveC4Spacing(c4Config, { dagre: true }),
+          });
+        });
+
+  // --- Clean-up ---------------------------------------------------------------------------------
+  const refineElements = new Map<string, RefineElement>();
+  for (const { shape, outline } of elements.values()) {
+    const rect = layout.nodes.get(shape.alias);
+    if (rect) {
+      refineElements.set(shape.alias, {
+        rect,
+        outline,
+        radius: ELEMENT_RADIUS,
+        parent: parentOf(shape.parentBoundary),
+      });
+    }
+  }
+  const refineBoundaries = new Map<string, RefineBoundary>();
+  for (const { boundary, title } of boundaries.values()) {
+    const rect = layout.boundaries.get(boundary.alias);
+    if (rect) {
+      refineBoundaries.set(boundary.alias, {
+        rect,
+        parent: parentOf(boundary.parentBoundary),
+        title: title ? { width: title.box.width, height: title.box.height } : undefined,
+        titleAlign: boundary.nodeType === 'nodeR' ? 'end' : 'start',
+        padding: layout.boundaryPadding.get(boundary.alias),
+      });
+    }
+  }
+  const refineRels: RefineRel[] = [];
+  const routedViews = new Map<string, RelView>();
+  for (const view of relViews) {
+    const edgeLayout = layout.edges.get(view.id);
+    const pending = layout.pending.get(view.id);
+    const labelSize = view.label
+      ? {
+          x: 0,
+          y: 0,
+          width: view.label.box.width + 2 * LABEL_PADDING,
+          height: view.label.box.height + 2 * LABEL_PADDING,
+        }
+      : undefined;
+    if (pending) {
+      refineRels.push({
+        id: view.id,
+        from: view.rel.from,
+        to: view.rel.to,
+        points: [],
+        label: labelSize,
+        offset: labelOffset(view.rel),
+        gap: pending.gap,
+        gapAxis: pending.axis,
+        nested: pending.nested,
+      });
+      routedViews.set(view.id, view);
+      continue;
+    }
+    if (!edgeLayout || edgeLayout.points.length < 2) {
+      log.warn(`C4: no route for relationship "${view.rel.from}" -> "${view.rel.to}"`);
+      view.label?.group.remove();
+      continue;
+    }
+    // From here on every route runs in its relationship's own direction, `from` to `to`.
+    const reversed = layoutEnds(view)[0] !== view.rel.from;
+    const points = reversed ? [...edgeLayout.points].reverse() : [...edgeLayout.points];
+    const label =
+      view.label && (edgeLayout.label ?? centredOn(routeMiddle(points), view.label.box));
+    refineRels.push({
+      id: view.id,
+      from: view.rel.from,
+      to: view.rel.to,
+      points,
+      label: label ? { ...label } : undefined,
+      offset: labelOffset(view.rel),
+    });
+    routedViews.set(view.id, view);
+  }
+  const refined = refineLayout({
+    elements: refineElements,
+    boundaries: refineBoundaries,
+    rels: refineRels,
+    boundaryPadding: spacing.boundaryPadding,
+  });
+
+  // --- Paint ------------------------------------------------------------------------------------
+  for (const { shape, node } of elements.values()) {
+    const rect = layout.nodes.get(shape.alias);
+    if (rect) {
+      positionNode({ ...node, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 });
+    }
+  }
+  for (const view of boundaries.values()) {
+    const rect = layout.boundaries.get(view.boundary.alias);
+    if (rect) {
+      paintBoundary(view, rect, refined.titles.get(view.boundary.alias), titleOverlay);
+    }
+  }
+  for (const [relId, points] of refined.routes) {
+    const view = routedViews.get(relId)!;
+    if (points.length < 2) {
+      log.warn(`C4: no route for relationship "${view.rel.from}" -> "${view.rel.to}"`);
+      view.label?.group.remove();
+      continue;
+    }
+    paintRelationship(edgeLayer, view, points, id, look);
+    const labelRect = refined.labels.get(relId);
+    if (view.label && labelRect) {
+      placeLabel(view.label, labelRect);
+    }
+  }
+
+  // --- Title and viewport -----------------------------------------------------------------------
+  const title = db.getTitle();
+  if (title) {
+    const bounds = container.node()?.getBBox();
+    if (bounds) {
+      container
+        .append('text')
+        .attr('class', 'c4TitleText')
+        .attr('x', bounds.x + bounds.width / 2)
+        .attr('y', bounds.y - TITLE_GAP)
+        .text(title);
+    }
+  }
+  setupViewport(svg, c4Config.diagramMarginX ?? 50, c4Config.diagramMarginY ?? 10, c4Config);
 };
 
-export default {
-  drawPersonOrSystemArray: drawC4ShapeArray,
-  drawBoundary,
-  setConf,
-  draw,
+const sortOuterFirst = (
+  boundaries: C4Boundary[],
+  parentOf: (alias: string | undefined) => string | undefined
+): C4Boundary[] => {
+  const byAlias = new Map(boundaries.map((boundary) => [boundary.alias, boundary]));
+  const depth = (boundary: C4Boundary): number => {
+    let level = 0;
+    let parent = parentOf(boundary.parentBoundary);
+    const seen = new Set<string>();
+    while (parent && !seen.has(parent)) {
+      seen.add(parent);
+      level++;
+      parent = parentOf(byAlias.get(parent)?.parentBoundary);
+    }
+    return level;
+  };
+  return [...boundaries].sort((a, b) => depth(a) - depth(b));
 };
+
+/** Draws a boundary's title; its frame is drawn once the layout has sized it. */
+const drawBoundaryTitle = async (
+  layer: Group,
+  boundary: C4Boundary,
+  parent: string | undefined,
+  diagramId: string,
+  config: MermaidConfig
+): Promise<BoundaryView> => {
+  const link = boundary.link ? formatUrl(boundary.link, config) : undefined;
+  const outer = link ? (layer.append('a').attr('xlink:href', link) as unknown as Group) : layer;
+  const isDeploymentNode = boundary.nodeType !== undefined;
+  const group = outer
+    .append('g')
+    .attr('class', `c4-boundary${isDeploymentNode ? ' c4-deployment-node' : ''}`)
+    .attr('id', `${diagramId}-${boundary.alias}`)
+    .attr('data-id', boundary.alias);
+  if (parent) {
+    group.attr('data-c4-boundary', parent);
+  }
+
+  const name = boundary.label?.text ?? '';
+  const type = boundaryTypeLabel(boundary);
+  const descr = boundary.descr?.text;
+  if (!name && !type && !descr) {
+    return { boundary, group };
+  }
+  const fontColor = asColor(boundary.fontColor);
+  const titleNode = {
+    id: `${boundary.alias}-title`,
+    domId: `${diagramId}-${boundary.alias}-title`,
+    label: name,
+    stereotype: type ?? '',
+    description: descr ? [descr] : undefined,
+    width: TITLE_WRAP_WIDTH,
+    padding: 0,
+    labelStyle: fontColor ? `color:${fontColor}` : undefined,
+    isGroup: false,
+  } as NonClusterNode;
+  const { shapeSvg } = await c4LabelHelper(group, titleNode, 'c4-boundary-title', {
+    align: boundary.nodeType === 'nodeR' ? 'end' : 'start',
+  });
+  const titleGroup = shapeSvg as unknown as Group;
+  titleGroup.attr('data-c4-title-of', boundary.alias);
+  const box = titleGroup.node()!.getBBox();
+  return { boundary, group, title: { group: titleGroup, box } };
+};
+
+const paintBoundary = (
+  view: BoundaryView,
+  rect: C4Rect,
+  title: { rect: C4Rect; overlay: boolean } | undefined,
+  overlay: Group
+) => {
+  const { boundary, group } = view;
+  const fill = asColor(boundary.bgColor);
+  const stroke = asColor(boundary.borderColor);
+  group
+    .insert('rect', ':first-child')
+    .attr('class', 'c4-boundary-frame')
+    .attr('x', rect.x)
+    .attr('y', rect.y)
+    .attr('width', rect.width)
+    .attr('height', rect.height)
+    .attr('rx', BOUNDARY_RADIUS)
+    .attr('ry', BOUNDARY_RADIUS)
+    .attr(
+      'style',
+      [fill && `fill:${fill}`, stroke && `stroke:${stroke}`].filter(Boolean).join(';')
+    );
+  if (!view.title || !title) {
+    return;
+  }
+  const { group: titleGroup, box } = view.title;
+  titleGroup.attr('transform', `translate(${title.rect.x - box.x}, ${title.rect.y - box.y})`);
+  if (title.overlay) {
+    // No line could be moved off the title and it had nowhere else to go: back it, and lift it
+    // above the lines, which then pass behind it.
+    titleGroup
+      .insert('rect', ':first-child')
+      .attr('class', 'c4-boundary-title-bg')
+      .attr('x', box.x - 2)
+      .attr('y', box.y - 1)
+      .attr('width', box.width + 4)
+      .attr('height', box.height + 2);
+    overlay.node()?.appendChild(titleGroup.node()!);
+  }
+};
+
+/** Draws a relationship's label, to be measured and later moved into place. */
+const drawRelationshipLabel = async (
+  layer: Group,
+  rel: C4Rel,
+  prefix: string,
+  domId: string,
+  wrapWidth: number
+): Promise<RelView['label']> => {
+  const name = `${prefix}${rel.label?.text ?? ''}`.trim();
+  const techn = rel.techn?.text?.trim();
+  const descr = rel.descr?.text?.trim();
+  if (!name && !techn && !descr) {
+    return undefined;
+  }
+  const textColor = asColor(rel.textColor);
+  const labelNode = {
+    id: domId,
+    domId,
+    label: name,
+    stereotype: techn ? `[${techn}]` : '',
+    description: descr ? [descr] : undefined,
+    width: wrapWidth,
+    padding: 0,
+    labelStyle: textColor ? `color:${textColor}` : undefined,
+    isGroup: false,
+  } as NonClusterNode;
+  const { shapeSvg } = await c4LabelHelper(layer, labelNode, 'c4-rel-label');
+  const group = shapeSvg as unknown as Group;
+  const box = group.node()!.getBBox();
+  group
+    .insert('rect', ':first-child')
+    .attr('class', 'c4-rel-label-bg')
+    .attr('x', box.x - LABEL_PADDING)
+    .attr('y', box.y - LABEL_PADDING)
+    .attr('width', box.width + 2 * LABEL_PADDING)
+    .attr('height', box.height + 2 * LABEL_PADDING)
+    .attr('rx', 3)
+    .attr('ry', 3);
+  return { group, box };
+};
+
+const labelOffset = (rel: C4Rel): C4Point => {
+  const x = Number(rel.offsetX);
+  const y = Number(rel.offsetY);
+  return { x: Number.isFinite(x) ? x : 0, y: Number.isFinite(y) ? y : 0 };
+};
+
+/** Moves a label so its padded box is `rect`. */
+const placeLabel = (label: NonNullable<RelView['label']>, rect: C4Rect) => {
+  const x = rect.x + LABEL_PADDING - label.box.x;
+  const y = rect.y + LABEL_PADDING - label.box.y;
+  label.group.attr('transform', `translate(${x}, ${y})`);
+};
+
+const paintRelationship = (
+  layer: Group,
+  view: RelView,
+  points: C4Point[],
+  diagramId: string,
+  look: string
+) => {
+  const { rel } = view;
+  const lineColor = asColor(rel.lineColor);
+  const bidirectional = rel.type === 'birel';
+  const back = rel.type === 'rel_b';
+  insertEdge(
+    layer,
+    {
+      id: view.id,
+      points,
+      arrowTypeStart: bidirectional || back ? 'arrow_point' : undefined,
+      arrowTypeEnd: back ? undefined : 'arrow_point',
+      classes: 'c4-rel',
+      style: lineColor ? [`stroke:${lineColor}`] : [],
+      thickness: 'normal',
+      pattern: 'solid',
+      curve: 'rounded',
+      look,
+    },
+    new Map(),
+    'c4',
+    {},
+    {},
+    diagramId,
+    true,
+    'c4'
+  );
+  layer
+    .select(`[id="${diagramId}-${view.id}"]`)
+    .attr('data-c4-from', rel.from)
+    .attr('data-c4-to', rel.to);
+};
+
+const routeMiddle = (points: C4Point[]): C4Point => {
+  const middle = Math.floor((points.length - 1) / 2);
+  const a = points[middle];
+  const b = points[middle + 1] ?? a;
+  return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+};
+
+const centredOn = (point: C4Point, box: DOMRect): C4Rect => ({
+  x: point.x - box.width / 2 - LABEL_PADDING,
+  y: point.y - box.height / 2 - LABEL_PADDING,
+  width: box.width + 2 * LABEL_PADDING,
+  height: box.height + 2 * LABEL_PADDING,
+});
+
+const setupViewport = (
+  svg: SVG,
+  marginX: number,
+  marginY: number,
+  c4Config: NonNullable<MermaidConfig['c4']>
+) => {
+  const bounds = svg.node()?.getBBox() ?? { x: 0, y: 0, width: 0, height: 0 };
+  const width = bounds.width + 2 * marginX;
+  const height = bounds.height + 2 * marginY;
+  configureSvgSize(svg, height, width, c4Config.useMaxWidth ?? true);
+  svg.attr('viewBox', `${bounds.x - marginX} ${bounds.y - marginY} ${width} ${height}`);
+};
+
+export default { draw };

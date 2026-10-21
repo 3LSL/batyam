@@ -1,0 +1,19 @@
+---
+description: >-
+  Rel_R and Rel_L between elements the flow leaves in one layer: the replica
+  is drawn to the right of the primary database and the event queue to its
+  left, each relationship crossing the gap between the two with its label in
+  the gap.
+---
+C4Container
+title Side-by-side relationships
+Person(user, "User")
+Container(web, "Web App", "React")
+ContainerDb(primary, "Primary", "PostgreSQL")
+ContainerDb(replica, "Replica", "PostgreSQL")
+ContainerQueue(queue, "Events", "Kafka")
+Rel(user, web, "Uses")
+Rel(web, primary, "Writes to")
+Rel(web, replica, "Reads from")
+Rel_R(primary, replica, "Replicates to")
+Rel_L(primary, queue, "Publishes changes to")

@@ -554,15 +554,77 @@ $defs: # JSON Schema definition (maybe we should move these to a separate file)
         default: 10
         minimum: 0
       c4ShapeMargin:
-        description: Margin between shapes
+        description: |
+          Gap between elements, both within a layer of the layout and between
+          layers, unless `c4ShapeSpacing` or `c4LayerSpacing` sets it.
         type: integer
         default: 50
         minimum: 0
       c4ShapePadding:
-        description: Padding between shapes
+        description: Space between an element's border and its text.
         type: integer
         default: 20
         minimum: 0
+      c4ShapeSpacing:
+        description: |
+          Gap between neighbouring elements in the same layer of the layout: side
+          by side when the relationships flow down or up, one above the other
+          when they flow left or right. Defaults to `c4ShapeMargin`. Values
+          below 10 are raised to 10, or below 24 to 24 when the diagram is laid
+          out with dagre.
+        type: integer
+        minimum: 10
+        # Default comes from `c4ShapeMargin` unless set explicitly.
+      c4LayerSpacing:
+        description: |
+          Gap between consecutive layers of the layout, along the flow of the
+          relationships. The lines and labels of the relationships between two
+          layers can widen it. Defaults to `c4ShapeMargin`. Values below 12 are
+          raised to 12, or below 24 to 24 when the diagram is laid out with
+          dagre.
+        type: integer
+        minimum: 12
+        # Default comes from `c4ShapeMargin` unless set explicitly.
+      c4RelSpacing:
+        description: |
+          Gap between relationship lines that run side by side. Values below 6
+          are raised to 6.
+        type: integer
+        default: 14
+        minimum: 6
+      c4RelShapeSpacing:
+        description: |
+          Gap between relationship lines and the elements they pass, and the
+          length of the last straight stretch of a line into an element. Values
+          below 12 are raised to 12.
+        type: integer
+        default: 20
+        minimum: 12
+      c4RelLabelWrapWidth:
+        description: |
+          Width at which relationship labels wrap. Narrower labels make the
+          drawing narrower when the relationships flow down or up, and shorter
+          when they flow left or right, but taller labels make up some of the
+          difference. Values below 80 are raised to 80.
+        type: integer
+        default: 200
+        minimum: 80
+      c4BoundaryPadding:
+        description: |
+          Space between a boundary's border and its contents. Values below 8 are
+          raised to 8. A boundary with a relationship to something inside it
+          keeps at least 20, the room the relationship is drawn in.
+        type: integer
+        default: 20
+        minimum: 8
+      c4BoundaryTitleGap:
+        description: |
+          Space between a boundary's title and its contents. Values below 8 are
+          raised to 8. A boundary with a relationship to something inside it
+          keeps at least 14.
+        type: integer
+        default: 14
+        minimum: 8
       width:
         description: Width of person boxes
         type: integer

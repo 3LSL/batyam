@@ -135,15 +135,40 @@ const isC4ElementType = (value: string): value is (typeof C4_ELEMENT_TYPES)[numb
   C4_ELEMENT_TYPE_SET.has(value);
 
 /**
+ * A colour from the diagram source or config, accepted only if it is a single colour value.
+ * The value lands in a CSS declaration, so one carrying `;` or `url(...)` could append further
+ * declarations (#8057). `CSS.supports` judges it where available; elsewhere (jsdom) a
+ * conservative pattern does.
+ */
+export const asColor = (value: unknown): string | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const color = value.trim();
+  if (color === '') {
+    return undefined;
+  }
+  const accepted =
+    typeof globalThis.CSS?.supports === 'function'
+      ? globalThis.CSS.supports('color', color) && !/[;{}]/.test(color)
+      : /^(#[\da-f]{3,8}|[a-z]+|rgba?\([\d\s%,./]+\)|hsla?\([\d\s%,./deg]+\))$/i.test(color);
+  return accepted ? color : undefined;
+};
+
+/**
  * Element colours: the per-element `<type>_bg_color`/`<type>_border_color` config
  * palette drives the fill and border, with white text. An explicit per-element
- * colour (UpdateElementStyle: $bgColor/$borderColor/$fontColor) overrides it.
+ * colour (UpdateElementStyle: $bgColor/$borderColor/$fontColor) overrides it; a value
+ * that is not a colour is ignored.
  */
 const elementCssStyles = (shape: C4ShapeLike, config: C4DiagramConfig): string[] => {
   const elementType = shape.typeC4Shape.text;
-  const fill = shape.bgColor ?? (isC4ElementType(elementType) && config[`${elementType}_bg_color`]);
+  const fill =
+    asColor(shape.bgColor) ??
+    (isC4ElementType(elementType) ? asColor(config[`${elementType}_bg_color`]) : undefined);
   const stroke =
-    shape.borderColor ?? (isC4ElementType(elementType) && config[`${elementType}_border_color`]);
+    asColor(shape.borderColor) ??
+    (isC4ElementType(elementType) ? asColor(config[`${elementType}_border_color`]) : undefined);
   const styles: string[] = [];
   if (fill) {
     styles.push(`fill:${fill}`);
@@ -151,7 +176,7 @@ const elementCssStyles = (shape: C4ShapeLike, config: C4DiagramConfig): string[]
   if (stroke) {
     styles.push(`stroke:${stroke}`);
   }
-  styles.push(`color:${shape.fontColor ?? '#FFFFFF'}`);
+  styles.push(`color:${asColor(shape.fontColor) ?? '#FFFFFF'}`);
   return styles;
 };
 

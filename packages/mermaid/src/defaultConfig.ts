@@ -87,6 +87,10 @@ const config: RequiredDeep<MermaidConfig> = {
   c4: {
     ...defaultConfigJson.c4,
     useWidth: undefined,
+    // Left undefined so that they fall back to `c4ShapeMargin`. Listed rather than omitted so
+    // `configKeys` finds them, or `sanitizeDirective` would drop them from a diagram's config.
+    c4ShapeSpacing: undefined,
+    c4LayerSpacing: undefined,
     personFont: function () {
       return {
         fontFamily: this.personFontFamily,
